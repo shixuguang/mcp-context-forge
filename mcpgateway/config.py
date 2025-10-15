@@ -342,7 +342,7 @@ class Settings(BaseSettings):
     mcpgateway_catalog_page_size: int = Field(default=100, description="Number of catalog servers per page")
 
     # Security
-    skip_ssl_verify: bool = False
+    skip_ssl_verify: bool = True
     cors_enabled: bool = True
 
     # Environment
