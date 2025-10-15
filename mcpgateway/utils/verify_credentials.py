@@ -113,6 +113,8 @@ async def verify_jwt_token(token: str) -> dict:
             "issuer": settings.jwt_issuer,
         }
 
+        print("sfsg")
+
         payload = jwt.decode(token, **decode_kwargs)
         return payload
 
@@ -128,10 +130,10 @@ async def verify_jwt_token(token: str) -> dict:
             detail="Token has expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    except jwt.PyJWTError:
+    except jwt.PyJWTError as jwtExcept:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
+            detail="Invalid token:"+str(jwtExcept),
             headers={"WWW-Authenticate": "Bearer"},
         )
 
