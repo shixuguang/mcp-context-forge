@@ -66,7 +66,7 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
     """
     logger = logging.getLogger(__name__)
     logger.setLevel("DEBUG")
-    
+
     if not credentials:
         logger.warning("No credentials provided")
         raise HTTPException(
@@ -75,7 +75,7 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    logger.debug("Attempting authentication with token: %s...", credentials.credentials[:20])
+    logger.debug("Attempting authentication with token: %s...", credentials.credentials)
     email = None
 
     try:
