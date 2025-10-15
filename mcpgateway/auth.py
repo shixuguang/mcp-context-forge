@@ -65,7 +65,8 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
         HTTPException: If authentication fails
     """
     logger = logging.getLogger(__name__)
-
+    logger.setLevel("DEBUG")
+    
     if not credentials:
         logger.warning("No credentials provided")
         raise HTTPException(

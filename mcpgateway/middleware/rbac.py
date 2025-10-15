@@ -136,6 +136,7 @@ async def get_current_user_with_permissions(
             "db": db,
         }
     except Exception as e:
+        logger.debug("authentication execption!!!!")
         logger.error(f"Authentication failed: {type(e).__name__}: {e}")
 
         # For browser requests (HTML Accept header or HTMX), redirect to login
