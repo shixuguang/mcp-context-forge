@@ -525,6 +525,15 @@ async def oauth_callback(
             logger.warning("OAuth callback state resolved to gateway without OAuth configuration")
             return _invalid_state_response()
 
+        # Recreate OAuth manager with CA certificate if present
+        if gateway.ca_certificate or gateway.ca_certificate_sig:
+            ca_cert_str = gateway.ca_certificate.decode('utf-8') if isinstance(gateway.ca_certificate, bytes) else gateway.ca_certificate
+            oauth_manager = OAuthManager(
+                token_storage=TokenStorageService(db),
+                ca_certificate=ca_cert_str,
+                ca_certificate_sig=gateway.ca_certificate_sig,
+            )
+
         # Complete OAuth flow
 
         # RFC 8707: Add resource parameter for JWT access tokens

@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
 import secrets
+import ssl
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
@@ -31,6 +32,8 @@ from mcpgateway.config import get_settings
 from mcpgateway.services.encryption_service import decrypt_oauth_config_for_runtime, get_encryption_service
 from mcpgateway.services.http_client_service import get_http_client
 from mcpgateway.utils.redis_client import get_redis_client as _get_shared_redis_client
+from mcpgateway.utils.ssl_context_cache import get_cached_ssl_context
+from mcpgateway.utils.validate_signature import validate_signature
 
 logger = logging.getLogger(__name__)
 
@@ -127,26 +130,106 @@ class OAuthManager:
         }
     )
 
-    def __init__(self, request_timeout: int = 30, max_retries: int = 3, token_storage: Optional[Any] = None):
+    def __init__(
+        self,
+        request_timeout: int = 30,
+        max_retries: int = 3,
+        token_storage: Optional[Any] = None,
+        ca_certificate: Optional[str] = None,
+        ca_certificate_sig: Optional[str] = None,
+    ):
         """Initialize OAuth Manager.
 
         Args:
             request_timeout: Timeout for OAuth requests in seconds
             max_retries: Maximum number of retry attempts for token requests
             token_storage: Optional TokenStorageService for storing tokens
+            ca_certificate: Optional CA certificate for TLS verification (PEM format)
+            ca_certificate_sig: Optional signature of CA certificate for integrity verification
         """
         self.request_timeout = request_timeout
         self.max_retries = max_retries
         self.token_storage = token_storage
+        self.ca_certificate = ca_certificate
+        self.ca_certificate_sig = ca_certificate_sig
         self.settings = get_settings()
+        self._ssl_context: Optional[ssl.SSLContext] = None
+        self._ssl_context_initialized = False
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        """Get the shared singleton HTTP client.
+    def _get_ssl_context(self) -> Optional[ssl.SSLContext]:
+        """Get SSL context for CA certificate if configured.
 
         Returns:
-            Shared httpx.AsyncClient instance with connection pooling
+            SSL context or None if no CA certificate configured or validation fails
         """
-        return await get_http_client()
+        if self._ssl_context_initialized:
+            return self._ssl_context
+
+        self._ssl_context_initialized = True
+
+        if not self.ca_certificate:
+            return None
+
+        # Validate signature if present and signing is enabled
+        if self.ca_certificate_sig and self.settings.enable_ed25519_signing:
+            try:
+                public_key_pem = self.settings.ed25519_public_key
+                if not public_key_pem:
+                    logger.warning("Ed25519 public key not configured, skipping CA certificate signature validation")
+                    return None
+                valid = validate_signature(
+                    self.ca_certificate.encode(),
+                    self.ca_certificate_sig,
+                    public_key_pem
+                )
+                if not valid:
+                    logger.warning("CA certificate signature validation failed, not using custom CA cert for OAuth")
+                    return None
+            except Exception as e:
+                logger.error(f"Error validating CA certificate signature: {e}")
+                return None
+
+        # Create SSL context from CA certificate
+        try:
+            self._ssl_context = get_cached_ssl_context(self.ca_certificate)
+            logger.info("Using custom CA certificate for OAuth token requests")
+            return self._ssl_context
+        except Exception as e:
+            logger.error(f"Error creating SSL context from CA certificate: {e}")
+            return None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get HTTP client for OAuth requests.
+
+        Returns an isolated client with custom CA certificate if configured,
+        otherwise returns the shared singleton client.
+
+        Returns:
+            httpx.AsyncClient instance
+        """
+        ssl_context = self._get_ssl_context()
+        if ssl_context:
+            # Use isolated client with custom CA certificate
+            # Create a new client each time when CA cert is present
+            # Note: Caller is responsible for closing this client
+            return httpx.AsyncClient(
+                timeout=self.request_timeout,
+                verify=ssl_context,
+                follow_redirects=True,
+            )
+        else:
+            # Use shared client for connection pooling when no custom CA cert
+            return await get_http_client()
+
+    async def _close_client_if_isolated(self, client: httpx.AsyncClient) -> None:
+        """Close client if it's an isolated client (has custom CA cert).
+
+        Args:
+            client: The HTTP client to potentially close
+        """
+        # Only close if we created an isolated client (has custom CA cert)
+        if self._ssl_context is not None:
+            await client.aclose()
 
     def _generate_pkce_params(self) -> Dict[str, str]:
         """Generate PKCE parameters for OAuth Authorization Code flow (RFC 7636).
@@ -265,8 +348,8 @@ class OAuthManager:
 
         # Fetch token with retries
         for attempt in range(self.max_retries):
+            client = await self._get_client()
             try:
-                client = await self._get_client()
                 response = await client.post(token_url, data=token_data, timeout=self.request_timeout)
                 response.raise_for_status()
 
@@ -301,6 +384,8 @@ class OAuthManager:
                 if attempt == self.max_retries - 1:
                     raise OAuthError(f"Failed to obtain access token after {self.max_retries} attempts: {str(e)}")
                 await asyncio.sleep(2**attempt)  # Exponential backoff
+            finally:
+                await self._close_client_if_isolated(client)
 
         # This should never be reached due to the exception above, but needed for type safety
         raise OAuthError("Failed to obtain access token after all retry attempts")
@@ -351,8 +436,8 @@ class OAuthManager:
 
         # Fetch token with retries
         for attempt in range(self.max_retries):
+            client = await self._get_client()
             try:
-                client = await self._get_client()
                 response = await client.post(token_url, data=token_data, timeout=self.request_timeout)
                 response.raise_for_status()
 
@@ -387,6 +472,8 @@ class OAuthManager:
                 if attempt == self.max_retries - 1:
                     raise OAuthError(f"Failed to obtain access token after {self.max_retries} attempts: {str(e)}")
                 await asyncio.sleep(2**attempt)  # Exponential backoff
+            finally:
+                await self._close_client_if_isolated(client)
 
         # This should never be reached due to the exception above, but needed for type safety
         raise OAuthError("Failed to obtain access token after all retry attempts")
@@ -1210,8 +1297,8 @@ class OAuthManager:
 
         # Exchange code for token with retries
         for attempt in range(self.max_retries):
+            client = await self._get_client()
             try:
-                client = await self._get_client()
                 response = await client.post(token_url, data=token_data, timeout=self.request_timeout)
                 response.raise_for_status()
 
@@ -1246,6 +1333,8 @@ class OAuthManager:
                 if attempt == self.max_retries - 1:
                     raise OAuthError(f"Failed to exchange code for token after {self.max_retries} attempts: {str(e)}")
                 await asyncio.sleep(2**attempt)  # Exponential backoff
+            finally:
+                await self._close_client_if_isolated(client)
 
         # This should never be reached due to the exception above, but needed for type safety
         raise OAuthError("Failed to exchange code for token after all retry attempts")
@@ -1305,8 +1394,8 @@ class OAuthManager:
 
         # Attempt token refresh with retries
         for attempt in range(self.max_retries):
+            client = await self._get_client()
             try:
-                client = await self._get_client()
                 response = await client.post(token_url, data=token_data, timeout=self.request_timeout)
                 if response.status_code == 200:
                     token_response = response.json()
@@ -1329,6 +1418,8 @@ class OAuthManager:
                 if attempt == self.max_retries - 1:
                     raise OAuthError(f"Failed to refresh token after {self.max_retries} attempts: {str(e)}")
                 await asyncio.sleep(2**attempt)  # Exponential backoff
+            finally:
+                await self._close_client_if_isolated(client)
 
         raise OAuthError("Failed to refresh token after all retry attempts")
 

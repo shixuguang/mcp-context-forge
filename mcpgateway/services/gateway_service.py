@@ -3280,7 +3280,15 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                         else:
                             # For Client Credentials flow, get token directly
                             try:
-                                access_token = await self.oauth_manager.get_access_token(gateway_oauth_config)
+                                # Create OAuth manager with CA certificate if present
+                                ca_cert_str = gateway_ca_certificate.decode('utf-8') if isinstance(gateway_ca_certificate, bytes) else gateway_ca_certificate
+                                oauth_mgr = OAuthManager(
+                                    request_timeout=int(os.getenv("OAUTH_REQUEST_TIMEOUT", "30")),
+                                    max_retries=int(os.getenv("OAUTH_MAX_RETRIES", "3")),
+                                    ca_certificate=ca_cert_str,
+                                    ca_certificate_sig=gateway_ca_certificate_sig,
+                                )
+                                access_token = await oauth_mgr.get_access_token(gateway_oauth_config)
                                 headers["Authorization"] = f"Bearer {access_token}"
                             except Exception as e:
                                 if span:
@@ -3631,7 +3639,15 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                     # For Client Credentials flow, we can get the token immediately
                     try:
                         logger.debug("Obtaining OAuth access token for Client Credentials flow")
-                        access_token = await self.oauth_manager.get_access_token(oauth_config)
+                        # Create OAuth manager with CA certificate if present
+                        ca_cert_str = ca_certificate.decode('utf-8') if isinstance(ca_certificate, bytes) else ca_certificate
+                        oauth_mgr = OAuthManager(
+                            request_timeout=int(os.getenv("OAUTH_REQUEST_TIMEOUT", "30")),
+                            max_retries=int(os.getenv("OAUTH_MAX_RETRIES", "3")),
+                            ca_certificate=ca_cert_str,
+                            ca_certificate_sig=None,  # Signature not available in this context
+                        )
+                        access_token = await oauth_mgr.get_access_token(oauth_config)
                         authentication = {"Authorization": f"Bearer {access_token}"}
                     except Exception as e:
                         logger.error(f"Failed to obtain OAuth access token: {e}")
