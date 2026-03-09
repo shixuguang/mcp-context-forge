@@ -4996,13 +4996,25 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                             logger.warning(f"Failed to fetch prompts: {e}")
 
                     return capabilities, tools, resources, prompts
-        except Exception as e:
-            # Note: This function is for OAuth servers only, which don't use query param auth
-            # Still sanitize in case exception contains URL with static sensitive params
+        except BaseException as e:
+            # Handle both regular exceptions and ExceptionGroups (from TaskGroup)
+            # ExceptionGroups are a subclass of BaseException in Python 3.11+
             sanitized_url = sanitize_url_for_logging(server_url)
+            
+            # Check if this is an ExceptionGroup and extract the first exception
+            if hasattr(e, 'exceptions') and hasattr(e.exceptions, '__iter__'):
+                try:
+                    first_error = next(iter(e.exceptions))
+                    sanitized_error = sanitize_exception_message(str(first_error))
+                    logger.error(f"MCP session error (from ExceptionGroup): {type(first_error).__name__}: {sanitized_error}", exc_info=True)
+                    raise GatewayConnectionError(f"Failed to fetch tools after OAuth: {sanitized_error}") from first_error
+                except (StopIteration, AttributeError):
+                    pass
+            
+            # Regular exception handling
             sanitized_error = sanitize_exception_message(str(e))
             logger.error(f"SSE connection error details: {type(e).__name__}: {sanitized_error}", exc_info=True)
-            raise GatewayConnectionError(f"Failed to connect to SSE server at {sanitized_url}: {sanitized_error}")
+            raise GatewayConnectionError(f"Failed to connect to SSE server at {sanitized_url}: {sanitized_error}") from e
 
     async def connect_to_sse_server(
         self,
