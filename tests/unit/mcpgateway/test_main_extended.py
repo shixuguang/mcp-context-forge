@@ -2833,6 +2833,108 @@ class TestMCPPathRewriteMiddleware:
         # ORJSONResponse sends http.response.start + http.response.body
         assert any(m.get("status") == 404 for m in sent if m.get("type") == "http.response.start")
 
+    @pytest.mark.asyncio
+    async def test_rewrite_with_app_root_path_in_scope(self, monkeypatch):
+        """Middleware correctly handles paths with APP_ROOT_PATH prefix in scope."""
+        app_mock = AsyncMock()
+        middleware = MCPPathRewriteMiddleware(app_mock)
+        
+        # Simulate deployment behind reverse proxy with path prefix
+        root_path = "/physical_location/ocp4813-default/mcp-context-forge-sqlite-9ac3666-7l9l7xpezyk8"
+        full_path = f"{root_path}/servers/7ce5f5ba03814433afab9d7122a96c38/mcp"
+        
+        scope = {
+            "type": "http",
+            "path": full_path,
+            "root_path": root_path,
+            "headers": []
+        }
+        receive = AsyncMock()
+        send = AsyncMock()
+
+        with patch("mcpgateway.main.streamable_http_auth", new=AsyncMock(return_value=True)):
+            await middleware._call_streamable_http(scope, receive, send)
+
+        # Path should be rewritten to /mcp/ after stripping root_path prefix
+        assert scope["path"] == "/mcp/"
+        app_mock.assert_called_once_with(scope, receive, send)
+
+    @pytest.mark.asyncio
+    async def test_rewrite_with_app_root_path_from_settings(self, monkeypatch):
+        """Middleware uses settings.app_root_path when scope root_path is empty."""
+        app_mock = AsyncMock()
+        middleware = MCPPathRewriteMiddleware(app_mock)
+        
+        root_path = "/api/v1"
+        full_path = f"{root_path}/servers/abc123/mcp"
+        
+        # Mock settings to provide app_root_path
+        monkeypatch.setattr("mcpgateway.main.settings.app_root_path", root_path)
+        
+        scope = {
+            "type": "http",
+            "path": full_path,
+            "root_path": "",  # Empty in scope, should fall back to settings
+            "headers": []
+        }
+        receive = AsyncMock()
+        send = AsyncMock()
+
+        with patch("mcpgateway.main.streamable_http_auth", new=AsyncMock(return_value=True)):
+            await middleware._call_streamable_http(scope, receive, send)
+
+        assert scope["path"] == "/mcp/"
+        app_mock.assert_called_once_with(scope, receive, send)
+
+    @pytest.mark.asyncio
+    async def test_rewrite_with_trailing_slash_root_path(self, monkeypatch):
+        """Middleware handles root_path with trailing slash correctly."""
+        app_mock = AsyncMock()
+        middleware = MCPPathRewriteMiddleware(app_mock)
+        
+        root_path = "/gateway/"
+        full_path = "/gateway/servers/xyz789/mcp"
+        
+        scope = {
+            "type": "http",
+            "path": full_path,
+            "root_path": root_path,
+            "headers": []
+        }
+        receive = AsyncMock()
+        send = AsyncMock()
+
+        with patch("mcpgateway.main.streamable_http_auth", new=AsyncMock(return_value=True)):
+            await middleware._call_streamable_http(scope, receive, send)
+
+        assert scope["path"] == "/mcp/"
+        app_mock.assert_called_once_with(scope, receive, send)
+
+    @pytest.mark.asyncio
+    async def test_rewrite_rejects_empty_server_id_with_root_path(self, monkeypatch):
+        """Middleware returns 404 for empty server ID even with root_path prefix."""
+        app_mock = AsyncMock()
+        middleware = MCPPathRewriteMiddleware(app_mock)
+        
+        root_path = "/api"
+        scope = {
+            "type": "http",
+            "path": "/api/servers//mcp",  # Empty server ID
+            "root_path": root_path,
+            "headers": []
+        }
+        receive = AsyncMock()
+        sent = []
+
+        async def send(msg):
+            sent.append(msg)
+
+        with patch("mcpgateway.main.streamable_http_auth", new=AsyncMock(return_value=True)):
+            await middleware._call_streamable_http(scope, receive, send)
+
+        app_mock.assert_not_called()
+        assert any(m.get("status") == 404 for m in sent if m.get("type") == "http.response.start")
+
 
 class TestServerEndpointCoverage:
     """Exercise server endpoints and SSE coverage."""

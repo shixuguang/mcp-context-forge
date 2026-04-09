@@ -3000,20 +3000,33 @@ class MCPPathRewriteMiddleware:
         original_path = scope.get("path", "")
         scope["modified_path"] = original_path
 
+        # Strip APP_ROOT_PATH prefix if present for consistent path matching
+        # When deployed behind a reverse proxy with a path prefix, the incoming
+        # request path includes the root_path prefix which must be normalized
+        normalized_path = original_path
+        root_path = scope.get("root_path", "") or settings.app_root_path or ""
+        if root_path and len(root_path) > 1:
+            root_path = root_path.rstrip("/")
+            if original_path.startswith(root_path):
+                rest = original_path[len(root_path):]
+                # Ensure we matched a full path segment, not a partial prefix
+                if rest == "" or rest.startswith("/"):
+                    normalized_path = rest if rest else "/"
+
         # Skip rewriting for well-known URIs (RFC 9728 OAuth metadata, etc.)
         # These paths may end with /mcp but should not be rewritten to the MCP transport
-        if not original_path.startswith("/.well-known/"):
-            if (original_path.endswith("/mcp") and original_path != "/mcp") or (original_path.endswith("/mcp/") and original_path != "/mcp/"):
+        if not normalized_path.startswith("/.well-known/"):
+            if (normalized_path.endswith("/mcp") and normalized_path != "/mcp") or (normalized_path.endswith("/mcp/") and normalized_path != "/mcp/"):
                 # SECURITY: Only rewrite recognised MCP paths — /servers/{id}/mcp.
                 # Arbitrary prefixes (e.g. /foo/mcp) must NOT be rewritten to
                 # /mcp/ as that would expose the global MCP transport under
                 # undocumented aliases, broadening the externally reachable
                 # route surface.
-                if original_path.startswith("/servers/"):
+                if normalized_path.startswith("/servers/"):
                     # Validate that a non-empty server_id segment is present.
                     # Without this check, paths like /servers//mcp (empty ID)
                     # would be rewritten and silently fall through (#3891).
-                    _srv_match = re.match(r"/servers/([^/]+)/mcp", original_path)
+                    _srv_match = re.match(r"/servers/([^/]+)/mcp", normalized_path)
                     if not _srv_match:
                         response = ORJSONResponse({"detail": "Invalid server identifier"}, status_code=404)
                         await response(scope, receive, send)
